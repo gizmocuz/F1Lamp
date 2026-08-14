@@ -35,6 +35,11 @@ namespace Config {
     // When enabled the lamp mirrors the official F1 track status and switches
     // itself off whenever no session is running.
     bool    f1_enabled      = false;
+    // Point these at the bundled simulator (tools/f1_sim.py) to test without
+    // waiting for a race weekend. Defaults are the real F1 timing service.
+    char    f1_host[64]     = "livetiming.formula1.com";
+    int     f1_port         = 443;
+    bool    f1_tls          = true;
 
     void save() {
         DynamicJsonDocument json(1024);
@@ -62,6 +67,9 @@ namespace Config {
         json["effect_speed"]    = effect_speed;
         json["power_on_boot"]   = power_on_boot;
         json["f1_enabled"]      = f1_enabled;
+        json["f1_host"]         = f1_host;
+        json["f1_port"]         = f1_port;
+        json["f1_tls"]          = f1_tls;
 
         File configFile = SPIFFS.open("/config.json", "w");
         if (!configFile) {
@@ -110,6 +118,9 @@ namespace Config {
                     effect_speed    = json["effect_speed"]  | 5;
                     power_on_boot   = json["power_on_boot"] | true;
                     f1_enabled      = json["f1_enabled"]    | false;
+                    strlcpy(f1_host, json["f1_host"] | "livetiming.formula1.com", sizeof(f1_host));
+                    f1_port         = json["f1_port"]       | 443;
+                    f1_tls          = json["f1_tls"]        | true;
                 }
             }
         }

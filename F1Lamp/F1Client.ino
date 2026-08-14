@@ -18,15 +18,17 @@
 //     the server answers "No Connection with that ID".
 //   * SignalR Core records are terminated by 0x1E, not by a newline.
 
-#define F1_HOST           "livetiming.formula1.com"
-#define F1_PORT           443
 #define F1_IDLE_POLL_MS   120000UL   // StreamingStatus poll interval while idle
 #define F1_STALE_MS       45000UL    // no data/ping for this long -> stale (pings are ~15 s)
 #define F1_RETRY_MIN_MS   5000UL
 #define F1_RETRY_MAX_MS   300000UL
 #define F1_RS             '\x1e'     // SignalR Core record separator
 
-static WiFiClientSecure f1Stream;            // long-lived SSE receive stream
+// The SSE stream can run over TLS (the real service) or plain HTTP (the local
+// simulator), so we keep one of each and point f1Stream at whichever is in use.
+static WiFiClientSecure f1StreamTls;
+static WiFiClient       f1StreamPlain;
+static WiFiClient*      f1Stream = nullptr;
 static char     f1Cookie[384] = "";          // "AWSALB=..; AWSALBCORS=..;"
 static char     f1TokenEnc[192] = "";        // URL-encoded connection token
 static uint32_t f1LastPoll    = 0;
@@ -75,6 +77,14 @@ const char* f1FeedName(F1Feed f) {
 
 bool f1IsSessionLive() {
     return f1Feed == FEED_LIVE && f1Session == SES_STARTED;
+}
+
+// False when pointed at the development simulator instead of the real service.
+// The UI warns about this so a test setting cannot quietly survive into normal
+// use, where it would look like F1 tracking simply never triggers.
+bool f1UsingRealService() {
+    return strcmp(Config::f1_host, "livetiming.formula1.com") == 0
+        && Config::f1_port == 443 && Config::f1_tls;
 }
 
 static void f1UrlEncode(const char* in, char* out, size_t outSize) {
@@ -140,12 +150,32 @@ static void f1SetLive(bool live) {
 }
 
 // ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
+
+// Picks TLS or plain according to Config::f1_tls and connects. Returns the
+// connected client, or nullptr. Both objects are supplied by the caller so
+// they live for as long as the request does.
+static WiFiClient* f1Connect(WiFiClientSecure& tls, WiFiClient& plain) {
+    WiFiClient* c;
+    if (Config::f1_tls) {
+        tls.setInsecure();
+        c = &tls;
+    } else {
+        c = &plain;
+    }
+    c->setTimeout(10);
+    if (!c->connect(Config::f1_host, Config::f1_port)) return nullptr;
+    return c;
+}
+
+// ---------------------------------------------------------------------------
 // HTTP plumbing
 // ---------------------------------------------------------------------------
 
 // Reads status line + headers. Captures Set-Cookie when asked. Leaves the
 // client positioned at the first body byte. Returns the HTTP status code.
-static int f1ReadHeaders(WiFiClientSecure& c, bool captureCookies) {
+static int f1ReadHeaders(WiFiClient& c, bool captureCookies) {
     int    status  = 0;
     bool   first   = true;
     uint32_t start = millis();
@@ -182,22 +212,22 @@ static int f1ReadHeaders(WiFiClientSecure& c, bool captureCookies) {
 // ---------------------------------------------------------------------------
 
 static bool f1FetchStreamingStatus(bool& available) {
-    WiFiClientSecure c;
-    c.setInsecure();
-    c.setTimeout(10);
-    if (!c.connect(F1_HOST, F1_PORT)) {
+    WiFiClientSecure tls;
+    WiFiClient       plain;
+    WiFiClient* c = f1Connect(tls, plain);
+    if (!c) {
         Serial.println("[F1] StreamingStatus: connect failed");
         return false;
     }
 
-    c.print(F("GET /static/StreamingStatus.json HTTP/1.1\r\n"
-              "Host: " F1_HOST "\r\n"
+    c->printf("GET /static/StreamingStatus.json HTTP/1.1\r\n"
+              "Host: %s\r\n"
               "User-Agent: F1Lamp\r\n"
-              "Connection: close\r\n\r\n"));
+              "Connection: close\r\n\r\n", Config::f1_host);
 
-    const int status = f1ReadHeaders(c, false);
-    String body = c.readString();
-    c.stop();
+    const int status = f1ReadHeaders(*c, false);
+    String body = c->readString();
+    c->stop();
 
     if (status != 200) {
         Serial.printf("[F1] StreamingStatus: HTTP %d\n", status);
@@ -220,21 +250,21 @@ static bool f1FetchStreamingStatus(bool& available) {
 // ---------------------------------------------------------------------------
 
 static bool f1Negotiate() {
-    WiFiClientSecure c;
-    c.setInsecure();
-    c.setTimeout(10);
-    if (!c.connect(F1_HOST, F1_PORT)) return false;
+    WiFiClientSecure tls;
+    WiFiClient       plain;
+    WiFiClient* c = f1Connect(tls, plain);
+    if (!c) return false;
 
-    c.print(F("POST /signalrcore/negotiate?negotiateVersion=1 HTTP/1.1\r\n"
-              "Host: " F1_HOST "\r\n"
+    c->printf("POST /signalrcore/negotiate?negotiateVersion=1 HTTP/1.1\r\n"
+              "Host: %s\r\n"
               "User-Agent: F1Lamp\r\n"
               "Content-Length: 0\r\n"
-              "Connection: close\r\n\r\n"));
+              "Connection: close\r\n\r\n", Config::f1_host);
 
     f1Cookie[0] = '\0';
-    const int status = f1ReadHeaders(c, true);
-    String body = c.readString();
-    c.stop();
+    const int status = f1ReadHeaders(*c, true);
+    String body = c->readString();
+    c->stop();
 
     if (status != 200) {
         Serial.printf("[F1] negotiate: HTTP %d\n", status);
@@ -266,22 +296,22 @@ static bool f1Negotiate() {
 // ---------------------------------------------------------------------------
 
 static bool f1OpenStream() {
-    f1Stream.setInsecure();
-    f1Stream.setTimeout(10);
-    if (!f1Stream.connect(F1_HOST, F1_PORT)) return false;
+    f1Stream = f1Connect(f1StreamTls, f1StreamPlain);
+    if (!f1Stream) return false;
 
-    f1Stream.printf("GET /signalrcore?id=%s HTTP/1.1\r\n"
-                    "Host: " F1_HOST "\r\n"
-                    "User-Agent: F1Lamp\r\n"
-                    "Accept: text/event-stream\r\n"
-                    "Cookie: %s\r\n"
-                    "Connection: keep-alive\r\n\r\n",
-                    f1TokenEnc, f1Cookie);
+    f1Stream->printf("GET /signalrcore?id=%s HTTP/1.1\r\n"
+                     "Host: %s\r\n"
+                     "User-Agent: F1Lamp\r\n"
+                     "Accept: text/event-stream\r\n"
+                     "Cookie: %s\r\n"
+                     "Connection: keep-alive\r\n\r\n",
+                     f1TokenEnc, Config::f1_host, f1Cookie);
 
-    const int status = f1ReadHeaders(f1Stream, false);
+    const int status = f1ReadHeaders(*f1Stream, false);
     if (status != 200) {
         Serial.printf("[F1] stream: HTTP %d\n", status);
-        f1Stream.stop();
+        f1Stream->stop();
+        f1Stream = nullptr;
         return false;
     }
     f1BufLen  = 0;
@@ -294,22 +324,22 @@ static bool f1OpenStream() {
 // ---------------------------------------------------------------------------
 
 static bool f1Send(const char* record) {
-    WiFiClientSecure c;
-    c.setInsecure();
-    c.setTimeout(10);
-    if (!c.connect(F1_HOST, F1_PORT)) return false;
+    WiFiClientSecure tls;
+    WiFiClient       plain;
+    WiFiClient* c = f1Connect(tls, plain);
+    if (!c) return false;
 
-    c.printf("POST /signalrcore?id=%s HTTP/1.1\r\n"
-             "Host: " F1_HOST "\r\n"
-             "User-Agent: F1Lamp\r\n"
-             "Cookie: %s\r\n"
-             "Content-Type: text/plain;charset=UTF-8\r\n"
-             "Content-Length: %u\r\n"
-             "Connection: close\r\n\r\n%s",
-             f1TokenEnc, f1Cookie, (unsigned)strlen(record), record);
+    c->printf("POST /signalrcore?id=%s HTTP/1.1\r\n"
+              "Host: %s\r\n"
+              "User-Agent: F1Lamp\r\n"
+              "Cookie: %s\r\n"
+              "Content-Type: text/plain;charset=UTF-8\r\n"
+              "Content-Length: %u\r\n"
+              "Connection: close\r\n\r\n%s",
+              f1TokenEnc, Config::f1_host, f1Cookie, (unsigned)strlen(record), record);
 
-    const int status = f1ReadHeaders(c, false);
-    c.stop();
+    const int status = f1ReadHeaders(*c, false);
+    c->stop();
     if (status != 200) Serial.printf("[F1] send: HTTP %d\n", status);
     return status == 200;
 }
@@ -423,7 +453,8 @@ void f1HandleSseLine(char* line) {
 // ---------------------------------------------------------------------------
 
 static void f1Disconnect() {
-    if (f1Stream.connected()) f1Stream.stop();
+    if (f1Stream && f1Stream->connected()) f1Stream->stop();
+    f1Stream = nullptr;
     f1BufLen = 0;
 }
 
@@ -476,8 +507,9 @@ static void f1Connect() {
 // ---------------------------------------------------------------------------
 
 static void f1PumpStream() {
-    while (f1Stream.available()) {
-        const int ch = f1Stream.read();
+    if (!f1Stream) return;
+    while (f1Stream->available()) {
+        const int ch = f1Stream->read();
         if (ch < 0) break;
         f1LastData = millis();
 
@@ -544,7 +576,7 @@ void f1Poll() {
     }
 
     if (f1Feed == FEED_LIVE || f1Feed == FEED_STALE) {
-        if (!f1Stream.connected()) {
+        if (!f1Stream || !f1Stream->connected()) {
             Serial.println("[F1] stream closed");
             f1Backoff();
             return;

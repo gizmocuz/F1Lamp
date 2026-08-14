@@ -114,6 +114,7 @@ The state badge is refreshed every 3 seconds so changes made through MQTT or the
 | Brightness | Overall brightness (1–255) |
 | Turn on after power-up | Whether the lamp lights up by itself after a power cycle |
 | **Track live F1** | Mirror the live F1 track status; lamp is held off while no session runs |
+| F1 server / TLS | **Development only** - defaults to `livetiming.formula1.com` : 443 with TLS. Only change this to point at the local simulator |
 
 All changes take effect immediately after saving — no reboot needed. Enabling or disabling MQTT blinks the lamp twice to confirm.
 
@@ -398,6 +399,9 @@ All settings are stored in SPIFFS as `/config.json`. If the filesystem cannot be
 | effect_speed | 5 |
 | power_on_boot | true |
 | f1_enabled | false |
+| f1_host | `livetiming.formula1.com` |
+| f1_port | 443 |
+| f1_tls | true |
 
 ---
 
@@ -433,6 +437,10 @@ F1Lamp/
 ├── MQTTAutoDiscovery.ino    # MQTT state publishing, HA auto-discovery, command callback
 ├── WebServer.ino            # Web UI handlers + REST API
 └── WiFiMqttSetup.ino        # WiFi captive portal, OTA, MQTT reconnect
+
+tools/                       # development only - not needed to build or run
+├── f1_sim.py                # F1 live timing simulator with console display
+└── f1_sim_selftest.py       # verifies the simulator against a firmware-alike client
 ```
 
 ---

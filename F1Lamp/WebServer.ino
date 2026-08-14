@@ -36,6 +36,11 @@ void handleWebRoot() {
 
     // F1 live tracking status
     if (Config::f1_enabled) {
+        if (!f1UsingRealService()) {
+            html += R"rawhtml(<p style="background:#5a3a00;border:1px solid #c78400;border-radius:4px;padding:6px"><b>DEV MODE</b><br>F1 data is coming from <b>)rawhtml";
+            html += Config::f1_host;
+            html += R"rawhtml(</b>, not the real F1 service.<br><a href="/config">Fix on the configuration page</a></p>)rawhtml";
+        }
         html += R"rawhtml(<p><b>F1 tracking:</b> <span style="color:#4caf50">on</span> &mdash; feed <b>)rawhtml";
         html += f1FeedName(f1Feed);
         html += R"rawhtml(</b></p>)rawhtml";
@@ -280,6 +285,19 @@ void handleWebConfig() {
         html += R"rawhtml(</td></tr>)rawhtml";
     }
 
+    if (!f1UsingRealService()) {
+        html += R"rawhtml(<tr><td colspan="2"><div style="background:#5a3a00;border:1px solid #c78400;border-radius:4px;padding:6px"><b>DEV MODE</b> &mdash; pointed at a test server, not the real F1 service. Set the host back to <code>livetiming.formula1.com</code>, port <code>443</code>, TLS on.</div></td></tr>)rawhtml";
+    }
+    html += R"rawhtml(<tr><td>F1 server:</td><td><input type="text" name="f1_host" value=")rawhtml";
+    html += Config::f1_host;
+    html += R"rawhtml(" maxlength="63" style="width:200px"> : <input type="number" name="f1_port" value=")rawhtml"
+        + String(Config::f1_port) +
+        R"rawhtml(" min="1" max="65535" style="width:70px"><br><small>Leave as <code>livetiming.formula1.com</code> : 443. Only change this for development, to point at <code>tools/f1_sim.py</code>.</small></td></tr>)rawhtml";
+
+    html += R"rawhtml(<tr><td>F1 server uses TLS:</td><td><input type="checkbox" name="f1_tls")rawhtml";
+    if (Config::f1_tls) html += R"rawhtml( checked)rawhtml";
+    html += R"rawhtml(><br><small>On for the real service. Off for the simulator (plain HTTP).</small></td></tr>)rawhtml";
+
     html += R"rawhtml(</table><br><div style="text-align:center"><button class="btn" type="submit">Save</button></div></form><hr><p style="text-align:center"><a href="/">Back to status</a> &nbsp;|&nbsp; <a href="/reset" style="color:#E74C3C" onclick="return confirm('Reset WiFi settings and reboot into AP mode?')">Reset WiFi</a></p>)rawhtml";
 
     html += R"rawhtml(<script>function mqttTest(){var f=document.forms[0];var r=document.getElementById('mqttres');var b=document.getElementById('mqttbtn');var q='?server='+encodeURIComponent(f.mqtt_server.value)+'&port='+encodeURIComponent(f.mqtt_port.value)+'&username='+encodeURIComponent(f.mqtt_username.value)+'&password='+encodeURIComponent(f.mqtt_password.value)+'&secure='+(f.mqtt_secure.checked?'1':'0');b.disabled=true;r.style.color='#999';r.textContent='Testing...';fetch('/api/mqtt_test'+q).then(function(x){return x.json()}).then(function(j){r.style.color=j.ok?'#4caf50':'#E74C3C';r.textContent=j.message;b.disabled=false;}).catch(function(){r.style.color='#E74C3C';r.textContent='Request failed';b.disabled=false;});}</script></body></html>)rawhtml";
@@ -299,6 +317,14 @@ void handleWebConfigSave() {
     Config::mqtt_secure   = webServer.hasArg("mqtt_secure");
     Config::power_on_boot = webServer.hasArg("power_on_boot");
     Config::f1_enabled    = webServer.hasArg("f1_enabled");   // f1Poll() applies this on the next loop()
+    Config::f1_tls        = webServer.hasArg("f1_tls");
+
+    if (webServer.hasArg("f1_host")) {
+        String h = webServer.arg("f1_host"); h.trim();
+        if (h.length() > 0) strlcpy(Config::f1_host, h.c_str(), sizeof(Config::f1_host));
+    }
+    if (webServer.hasArg("f1_port"))
+        Config::f1_port = constrain((int)webServer.arg("f1_port").toInt(), 1, 65535);
 
     if (webServer.hasArg("mqtt_server")) {
         String s = webServer.arg("mqtt_server"); s.trim();
