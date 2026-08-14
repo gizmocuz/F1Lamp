@@ -1,6 +1,6 @@
 # F1Lamp
 
-An ESP32-C3 Super Mini firmware for the **[F1 WLED Lightbox](https://makerworld.com/en/models/2068365-f1-wled-lightbox#profileId-2233736)** 3D print. It drives three short WS2812B strips (11 LEDs in total) chained on a single data line, and gives you on/off, colour, brightness and a handful of animations — over a built-in web interface, a REST API, or MQTT / Home Assistant.
+An ESP32-C3 Super Mini firmware for the **[F1 WLED Lightbox](https://makerworld.com/en/models/2068365-f1-wled-lightbox#profileId-2233736)** 3D print. It drives three short WS2812B strips (11 LEDs in total) chained on a single data line, and gives you on/off, colour, brightness and a handful of animations — over a built-in web interface, a REST API, or MQTT with auto-discovery for **Domoticz** and Home Assistant.
 
 **Author:** PA1DVB
 
@@ -160,7 +160,7 @@ The state badge is refreshed every 3 seconds so changes made through MQTT or the
 
 | Setting | Description |
 |---------|-------------|
-| MQTT Enabled | Enable MQTT / Home Assistant auto-discovery |
+| MQTT Enabled | Enable MQTT auto-discovery (Domoticz / Home Assistant) |
 | MQTT Server | Broker hostname or IP address |
 | MQTT Port | Broker port (default 1883; use 8883 for TLS) |
 | MQTT Username | Leave blank if not required |
@@ -360,16 +360,18 @@ curl -X POST http://192.168.1.42/api/color \
 
 ---
 
-## MQTT / Home Assistant / Domoticz
+## MQTT / Domoticz / Home Assistant
 
 MQTT is **disabled by default**. Enable it on the Configuration page, fill in the broker details, and press **Save**. The lamp blinks twice to confirm; no reboot is needed.
 
-When enabled, the firmware publishes Home Assistant MQTT Auto Discovery configs and registers **two entities** on one device:
+When enabled, the firmware publishes MQTT Auto Discovery configs and registers **four entities** on one device. Both **Domoticz** and Home Assistant consume the same discovery format, so no extra configuration is needed on either:
 
 1. A **light** — on/off, brightness, RGB colour and the effect list.
 2. A **select** — the effect on its own, so it can be used directly from a dashboard, script or Domoticz without digging into the light's more-info dialog or writing a template.
+3. A **switch** — Formula 1 live tracking on/off.
+4. A **sensor** — the current F1 track status (`clear` / `yellow` / `safety_car` / `vsc` / `vsc_ending` / `red` / `unknown`).
 
-Both are driven by the same state topic, so they always agree.
+All four are driven by the same state topic, so they always agree.
 
 | Topic | Description |
 |-------|-------------|
@@ -389,7 +391,7 @@ Both are driven by the same state topic, so they always agree.
 }
 ```
 
-**Command payload** (sent by Home Assistant, JSON schema):
+**Command payload** (sent by Domoticz or Home Assistant, JSON schema):
 ```json
 { "state": "ON", "brightness": 200, "color": { "r": 255, "g": 0, "b": 0 }, "effect": "Race Start" }
 ```
