@@ -316,7 +316,16 @@ void handleWebConfigSave() {
     Config::mqtt_enabled  = webServer.hasArg("mqtt_enabled");
     Config::mqtt_secure   = webServer.hasArg("mqtt_secure");
     Config::power_on_boot = webServer.hasArg("power_on_boot");
-    Config::f1_enabled    = webServer.hasArg("f1_enabled");   // f1Poll() applies this on the next loop()
+    // Remember the old F1 settings so we can tell whether the client needs
+    // restarting - otherwise it would sit out the remaining 2 min poll timer
+    // (or up to a 5 min backoff) before noticing the new server.
+    char       oldF1Host[sizeof(Config::f1_host)];
+    strlcpy(oldF1Host, Config::f1_host, sizeof(oldF1Host));
+    const bool oldF1Enabled = Config::f1_enabled;
+    const int  oldF1Port    = Config::f1_port;
+    const bool oldF1Tls     = Config::f1_tls;
+
+    Config::f1_enabled    = webServer.hasArg("f1_enabled");
     Config::f1_tls        = webServer.hasArg("f1_tls");
 
     if (webServer.hasArg("f1_host")) {
@@ -325,6 +334,11 @@ void handleWebConfigSave() {
     }
     if (webServer.hasArg("f1_port"))
         Config::f1_port = constrain((int)webServer.arg("f1_port").toInt(), 1, 65535);
+
+    const bool f1Changed = (Config::f1_enabled != oldF1Enabled)
+                        || (Config::f1_port    != oldF1Port)
+                        || (Config::f1_tls     != oldF1Tls)
+                        || (strcmp(Config::f1_host, oldF1Host) != 0);
 
     if (webServer.hasArg("mqtt_server")) {
         String s = webServer.arg("mqtt_server"); s.trim();
@@ -393,6 +407,13 @@ void handleWebConfigSave() {
 
     Config::save();
     configDirty = false;
+
+    // Drop any running F1 connection and clear the poll/backoff timers so the
+    // new settings are used on the very next loop() instead of up to 5 min later
+    if (f1Changed) {
+        Serial.println("[F1] settings changed - restarting client");
+        f1Shutdown();
+    }
 
     // Apply hardware changes immediately
     ws2812b.updateLength(totalPixels());

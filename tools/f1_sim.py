@@ -210,6 +210,7 @@ class Sim:
             "reconnect":         [None, "reconnected after a drop"],
         }
         self.connect_count = 0
+        self.requests = 0
 
     # -- time ------------------------------------------------------------- #
     def now(self):
@@ -236,7 +237,8 @@ class Sim:
                 return
             frame = "data: " + json.dumps(payload, separators=(",", ":")) + RS + "\n\n"
             data = frame.encode()
-            self.tx_bytes += len(data) * max(1, len(self.subscribers))
+            # only count what a client will really receive
+            self.tx_bytes += len(data) * len(self.subscribers)
             for q in list(self.subscribers):
                 q.append(data)
 
@@ -315,6 +317,8 @@ def make_handler(sim):
         # ---------------------------------------------------------------- #
         def do_GET(self):
             sim.client_ip = self.client_address[0]
+            with sim.lock:
+                sim.requests += 1
             p = self._path()
 
             if p == "/static/StreamingStatus.json":
@@ -331,11 +335,14 @@ def make_handler(sim):
                 self._sse()
                 return
 
+            sim.log("GET  %s -> 404 (unexpected path)" % p, C.RED)
             self._send(404, b'{"error":"not found"}')
 
         # ---------------------------------------------------------------- #
         def do_POST(self):
             sim.client_ip = self.client_address[0]
+            with sim.lock:
+                sim.requests += 1
             p = self._path()
 
             if p == "/signalrcore/negotiate":
@@ -372,6 +379,7 @@ def make_handler(sim):
                 self._signalr_send()
                 return
 
+            sim.log("POST %s -> 404 (unexpected path)" % p, C.RED)
             self._send(404, b'{"error":"not found"}')
 
         # ---------------------------------------------------------------- #
@@ -508,6 +516,7 @@ def render(sim, port, width=78):
         checks = {k: list(v) for k, v in sim.checks.items()}
         nsub, tx, pings, muted = len(sim.subscribers), sim.tx_bytes, sim.pings, sim.muted
         cip = sim.client_ip
+        nreq = sim.requests
 
     name, label, colour, ch, lamp = TRACK[track]
     live = (streaming == "Available" and session == "Started")
@@ -542,9 +551,27 @@ def render(sim, port, width=78):
         strip += col + c + C.RESET
     out.append("  " + strip)
     out.append("")
-    out.append("  SSE clients %-4d  connects %-4d  TX %-8s  pings %d" %
-               (nsub, sim.connect_count, "%d B" % tx, pings))
+    out.append("  SSE clients %-4d  connects %-4d  requests %-5d  TX %-8s  pings %d" %
+               (nsub, sim.connect_count, nreq, "%d B" % tx, pings))
     out.append("")
+
+    if nreq == 0:
+        out.append("  " + C.ON_RED + C.WHITE + C.BOLD +
+                   " NO REQUESTS RECEIVED - the lamp has not reached this server " + C.RESET)
+        out.append("")
+        out.append("   1. Windows Firewall: allow Python on " + C.BOLD + "Private" + C.RESET +
+                   " networks (most common cause)")
+        out.append("   2. On the lamp /config:  F1 server = " + C.BOLD + "%s : %d" % (local_ip(), port) + C.RESET)
+        out.append("   3. " + C.BOLD + "Untick" + C.RESET + " 'F1 server uses TLS' - this server is plain HTTP")
+        out.append("   4. Tick 'Track live F1', then press Save")
+        out.append("   5. From a phone on the same WiFi, open:")
+        out.append("        " + C.CYAN + "http://%s:%d/static/StreamingStatus.json" % (local_ip(), port) + C.RESET)
+        out.append("      If that fails, it is the network or firewall, not the lamp.")
+        out.append("")
+    elif nsub == 0:
+        out.append("  " + C.YELLOW + "Requests seen, but no SSE stream open yet." + C.RESET +
+                   " Streaming must be Available for the lamp to connect.")
+        out.append("")
 
     out.append(C.BOLD + "  PROTOCOL CHECKS" + C.RESET)
     for key, (ok, desc) in checks.items():
