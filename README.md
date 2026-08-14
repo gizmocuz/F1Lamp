@@ -54,6 +54,65 @@ If your build wires the strips in a different order, just swap the LED counts on
 
 A 330 Ω resistor in the data line and a 470 µF capacitor across 5 V / GND are recommended but not required at this small LED count — 11 LEDs at full white draw roughly 0.6 A, well within what the ESP32-C3's 5 V pin can pass from USB.
 
+### Level shifter (recommended)
+
+The ESP32-C3 drives its GPIOs at **3.3 V**, but a WS2812B wants a logic high of
+**0.7 x VDD** - that is **3.5 V** on a 5 V supply. Driving the strip directly is
+therefore out of spec, and it shows: the same lamp can work on one USB charger
+and produce random per-LED colours, flicker or a "rainbow" on another, because
+chargers differ by a couple of hundred millivolts.
+
+A single **74AHCT125** (quad buffer) fixes it properly. The `HCT` family is the
+point - its input threshold is about 2 V, so 3.3 V drives it cleanly, while its
+output swings the full 5 V the strip wants. Plain `HC` has a ~3.5 V threshold
+and will **not** help. An `SN74HCT245` works equally well.
+
+```
+   ESP32-C3 SuperMini                74AHCT125                    LED strip 1
+                                  (DIP-14, top view)
+
+                              ┌────────┬─┬────────┐
+        5V  ─────────┬────────┤14  VCC └─┘        │
+                     │        │                   │
+                     │   ┌────┤1   1OE            │
+       GND  ────┬────┼───┘    │                   │
+                │    │        │                   │
+     GPIO4  ────┼────┼────────┤2   1A             │
+                │    │        │                   │
+                │    │        │3   1Y             ├──[330R]──► DIN
+                │    │        │                   │
+                │    ├─ 0.1uF ┤7   GND            │
+                └────┼────────┤                   │
+                     │        │                   │
+                     │        │4,10,13  OE ───────┼──► 5V   (unused gates off)
+                     │        │5, 9,12  A  ───────┼──► GND  (unused inputs tied)
+                     │        └───────────────────┘
+                     │
+                     └──────────────────────────────► strip +5V
+       GND ─────────────────────────────────────────► strip GND
+```
+
+| 74AHCT125 pin | Connect to |
+|---|---|
+| 14 `VCC` | +5 V (same rail as the strip) |
+| 7 `GND` | GND (common with the ESP32) |
+| 1 `1OE` | **GND** - active low, ties the buffer permanently on |
+| 2 `1A` | ESP32 **GPIO4** (data out) |
+| 3 `1Y` | 330 Ohm resistor, then strip **DIN** |
+| 4, 10, 13 (`2OE`,`3OE`,`4OE`) | +5 V, to disable the three unused outputs |
+| 5, 9, 12 (`2A`,`3A`,`4A`) | GND, so unused inputs do not float |
+| across 14 and 7 | 0.1 uF ceramic decoupling capacitor |
+
+Keep the data wire short, and give the strip its own 470-1000 uF electrolytic
+across +5 V / GND. With the buffer fitted the lamp behaves identically on any
+5 V supply.
+
+**Zero-part alternative for testing:** move the strip's `+` from `5V` to `3V3`.
+At 3.3 V supply the threshold drops to ~2.3 V and the 3.3 V data works cleanly.
+The LEDs are dimmer and the board's regulator only has ~500 mA to give, so keep
+the brightness down - but it is a quick way to confirm that marginal logic
+levels, and not the firmware, are causing bad colours.
+
 ---
 
 ## First Boot — WiFi Setup

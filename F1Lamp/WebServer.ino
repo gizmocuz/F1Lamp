@@ -430,14 +430,28 @@ void handleWebConfigSave() {
                            || (Config::pixel_color_order != oldOrder)
                            || (Config::pixel_khz         != oldKhz);
 
-    ws2812b.updateLength(totalPixels());
-    ws2812b.updateType((neoPixelType)(Config::pixel_color_order |
-                       (Config::pixel_khz == 400 ? NEO_KHZ400 : NEO_KHZ800)));
+    // Strip parameters are applied by REBOOTING, not by re-initialising in place.
+    //
+    // Adafruit_NeoPixel grabs an RMT TX channel in begin() and never releases
+    // it, and the ESP32-C3 only has TWO. Calling begin() on each change worked
+    // once, then silently exhausted the channels: show() stopped emitting and
+    // the strip froze on its last good frame while the firmware carried on
+    // happily. updateType() on its own does not re-do the RMT bit timing
+    // either, so 800 <-> 400 kHz would not take effect. A reboot is the only
+    // reliable option, and these are settings you change once.
     if (stripChanged) {
-        ws2812b.setPin(Config::led_pin);
-        ws2812b.begin();
-        ws2812b.clear();
-        ws2812b.show();
+        Serial.println("[LED] strip settings changed - rebooting to apply");
+        webServer.send(200, "text/html; charset=utf-8",
+            R"rawhtml(<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="8;url=/"><title>Applying</title>
+<style>body{font-family:Helvetica;background:#111;color:#eee;text-align:center;padding:40px}
+h1{color:#E10600}</style></head><body><h1>Applying LED settings</h1>
+<p>Rebooting so the new pixel order / signal speed / pixel count take effect.</p>
+<p><small>This page returns to the lamp in a few seconds.</small></p>
+</body></html>)rawhtml");
+        delay(400);
+        ESP.restart();
     }
 
     // Handle MQTT state transitions
