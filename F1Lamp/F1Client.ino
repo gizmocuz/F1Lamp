@@ -20,7 +20,7 @@
 
 #define F1_IDLE_POLL_MS   120000UL   // StreamingStatus poll interval while idle
 #define F1_DEV_POLL_MS    8000UL     // ...and when pointed at the dev simulator
-#define F1_DEV_RETRY_MAX  20000UL    // shorter backoff cap in dev, 5 min is unusable there
+#define F1_DEV_RETRY_MAX  5000UL     // dev: retry every 5 s, no backoff ramp
 #define F1_STALE_MS       45000UL    // no data/ping for this long -> stale (pings are ~15 s)
 #define F1_RETRY_MIN_MS   5000UL
 #define F1_RETRY_MAX_MS   300000UL
@@ -175,28 +175,79 @@ static WiFiClient* f1Connect(WiFiClientSecure& tls, WiFiClient& plain) {
 // HTTP plumbing
 // ---------------------------------------------------------------------------
 
-// Reads status line + headers. Captures Set-Cookie when asked. Leaves the
-// client positioned at the first body byte. Returns the HTTP status code.
-static int f1ReadHeaders(WiFiClient& c, bool captureCookies) {
-    int    status  = 0;
-    bool   first   = true;
-    uint32_t start = millis();
+// Reads one CRLF line with an explicit deadline.
+//
+// Deliberately avoids Stream::readStringUntil(): that relies on the Stream
+// timeout and on connected(), and ESP32 reports connected() == false as soon as
+// the peer closes even while data is still sitting in the RX buffer. Since we
+// send "Connection: close", that race silently truncated larger responses.
+static bool f1ReadLine(WiFiClient& c, char* buf, size_t bufSize, uint32_t deadline) {
+    size_t n = 0;
+    while ((int32_t)(millis() - deadline) < 0) {
+        if (!c.available()) {
+            if (!c.connected()) break;      // closed AND drained
+            delay(1);
+            continue;
+        }
+        const int ch = c.read();
+        if (ch < 0)    continue;
+        if (ch == '\r') continue;
+        if (ch == '\n') { buf[n] = '\0'; return true; }
+        if (n < bufSize - 1) buf[n++] = (char)ch;
+    }
+    buf[n] = '\0';
+    return n > 0;
+}
 
-    while (c.connected() && millis() - start < 12000) {
-        String line = c.readStringUntil('\n');
-        if (line.length() == 0 && !c.available()) continue;
-        line.trim();
+// Reads the body. With a known Content-Length we read exactly that many bytes;
+// otherwise we drain until the peer closes. Never relies on Stream timeouts.
+static String f1ReadBody(WiFiClient& c, int contentLength, uint32_t deadline) {
+    String out;
+    if (contentLength > 0) out.reserve(contentLength + 1);
+
+    while ((int32_t)(millis() - deadline) < 0) {
+        if (contentLength > 0 && (int)out.length() >= contentLength) break;
+        if (!c.available()) {
+            if (!c.connected()) break;      // closed AND drained
+            delay(1);
+            continue;
+        }
+        const int ch = c.read();
+        if (ch >= 0) out += (char)ch;
+    }
+    return out;
+}
+
+// Reads status line + headers. Captures Set-Cookie and Content-Length when
+// asked. Leaves the client positioned at the first body byte.
+static int f1ReadHeaders(WiFiClient& c, bool captureCookies, int* contentLength = nullptr) {
+    int  status = 0;
+    bool first  = true;
+    char line[256];
+    const uint32_t deadline = millis() + 12000;
+
+    if (contentLength) *contentLength = -1;
+
+    while ((int32_t)(millis() - deadline) < 0) {
+        if (!f1ReadLine(c, line, sizeof(line), deadline)) {
+            if (!c.connected() && !c.available()) break;
+            continue;
+        }
 
         if (first) {
-            const int sp = line.indexOf(' ');
-            if (sp > 0) status = line.substring(sp + 1, sp + 4).toInt();
+            const char* sp = strchr(line, ' ');
+            if (sp) status = atoi(sp + 1);
             first = false;
             continue;
         }
-        if (line.length() == 0) break;   // end of headers
+        if (line[0] == '\0') break;          // blank line: end of headers
 
-        if (captureCookies && line.startsWith("Set-Cookie:")) {
-            String v = line.substring(11);
+        if (contentLength && strncasecmp(line, "Content-Length:", 15) == 0) {
+            *contentLength = atoi(line + 15);
+        }
+
+        if (captureCookies && strncasecmp(line, "Set-Cookie:", 11) == 0) {
+            String v = String(line + 11);
             v.trim();
             const int semi = v.indexOf(';');
             if (semi > 0) v = v.substring(0, semi);   // keep only NAME=VALUE
@@ -227,8 +278,9 @@ static bool f1FetchStreamingStatus(bool& available) {
               "User-Agent: F1Lamp\r\n"
               "Connection: close\r\n\r\n", Config::f1_host);
 
-    const int status = f1ReadHeaders(*c, false);
-    String body = c->readString();
+    int len = -1;
+    const int status = f1ReadHeaders(*c, false, &len);
+    String body = f1ReadBody(*c, len, millis() + 8000);
     c->stop();
 
     if (status != 200) {
@@ -238,7 +290,8 @@ static bool f1FetchStreamingStatus(bool& available) {
 
     DynamicJsonDocument doc(128);
     if (deserializeJson(doc, f1SkipBom(body.c_str())) != DeserializationError::Ok) {
-        Serial.println("[F1] StreamingStatus: bad JSON");
+        Serial.printf("[F1] StreamingStatus: bad JSON (len=%d, got %d bytes): %.60s\n",
+                      len, (int)body.length(), body.c_str());
         return false;
     }
 
@@ -264,8 +317,9 @@ static bool f1Negotiate() {
               "Connection: close\r\n\r\n", Config::f1_host);
 
     f1Cookie[0] = '\0';
-    const int status = f1ReadHeaders(*c, true);
-    String body = c->readString();
+    int len = -1;
+    const int status = f1ReadHeaders(*c, true, &len);
+    String body = f1ReadBody(*c, len, millis() + 8000);
     c->stop();
 
     if (status != 200) {
@@ -274,8 +328,9 @@ static bool f1Negotiate() {
     }
 
     DynamicJsonDocument doc(512);
-    if (deserializeJson(doc, body) != DeserializationError::Ok) {
-        Serial.println("[F1] negotiate: bad JSON");
+    if (deserializeJson(doc, f1SkipBom(body.c_str())) != DeserializationError::Ok) {
+        Serial.printf("[F1] negotiate: bad JSON (len=%d, got %d bytes): %.80s\n",
+                      len, (int)body.length(), body.c_str());
         return false;
     }
 
@@ -340,7 +395,9 @@ static bool f1Send(const char* record) {
               "Connection: close\r\n\r\n%s",
               f1TokenEnc, Config::f1_host, f1Cookie, (unsigned)strlen(record), record);
 
-    const int status = f1ReadHeaders(*c, false);
+    int len = -1;
+    const int status = f1ReadHeaders(*c, false, &len);
+    f1ReadBody(*c, len, millis() + 5000);
     c->stop();
     if (status != 200) Serial.printf("[F1] send: HTTP %d\n", status);
     return status == 200;
