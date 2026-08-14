@@ -359,6 +359,12 @@ void handleWebConfigSave() {
     }
 
     // --- LED strips ---
+    const int     oldS1 = Config::strip1_pixels, oldS2 = Config::strip2_pixels,
+                  oldS3 = Config::strip3_pixels;
+    const int     oldLedPin = Config::led_pin;
+    const uint8_t oldOrder  = Config::pixel_color_order;
+    const int     oldKhz    = Config::pixel_khz;
+
     int s1 = Config::strip1_pixels, s2 = Config::strip2_pixels, s3 = Config::strip3_pixels;
     if (webServer.hasArg("strip1_pixels")) s1 = constrain((int)webServer.arg("strip1_pixels").toInt(), 0, 100);
     if (webServer.hasArg("strip2_pixels")) s2 = constrain((int)webServer.arg("strip2_pixels").toInt(), 0, 100);
@@ -415,13 +421,23 @@ void handleWebConfigSave() {
         f1Shutdown();
     }
 
-    // Apply hardware changes immediately
+    // Apply hardware changes immediately.
+    // begin() is re-run whenever ANY strip parameter changes, not just the pin:
+    // updateType() alone does not reliably re-initialise the ESP32 RMT bit
+    // timing, so switching 800 <-> 400 kHz could silently do nothing.
+    const bool stripChanged = (s1 != oldS1) || (s2 != oldS2) || (s3 != oldS3)
+                           || (Config::led_pin           != oldLedPin)
+                           || (Config::pixel_color_order != oldOrder)
+                           || (Config::pixel_khz         != oldKhz);
+
     ws2812b.updateLength(totalPixels());
     ws2812b.updateType((neoPixelType)(Config::pixel_color_order |
                        (Config::pixel_khz == 400 ? NEO_KHZ400 : NEO_KHZ800)));
-    if ((uint8_t)Config::led_pin != ws2812b.getPin()) {
+    if (stripChanged) {
         ws2812b.setPin(Config::led_pin);
-        ws2812b.begin(); // re-init RMT only when the pin actually changes
+        ws2812b.begin();
+        ws2812b.clear();
+        ws2812b.show();
     }
 
     // Handle MQTT state transitions

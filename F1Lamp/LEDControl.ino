@@ -94,7 +94,23 @@ void handleEffect() {
         effectReset = false;
     }
 
-    if (!ledState || currentEffect() == EFFECT_SOLID) return;
+    // Static frames (Solid, or the strip switched off) used to be written once
+    // and never again, so a frame corrupted on the wire stayed corrupted until
+    // something else redrew - the classic "one LED stays lit after Off".
+    // Re-send once a second so a glitch heals itself. ~330 us/s of RMT time and
+    // no extra LED current, since the pixels are already lit.
+    if (!ledState || currentEffect() == EFFECT_SOLID) {
+        static uint32_t lastRefresh = 0;
+        const uint32_t nowMs = millis();
+        if (nowMs - lastRefresh >= 1000) {
+            lastRefresh = nowMs;
+            ws2812b.setBrightness(currentBrightness);
+            ws2812b.clear();
+            if (ledState) ws2812b.fill(currentColor(), 0, totalPixels());
+            ws2812b.show();
+        }
+        return;
+    }
 
     const int n   = totalPixels();
     const int spd = constrain(currentSpeed(), 1, 10);
