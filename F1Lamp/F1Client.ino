@@ -40,6 +40,14 @@ static uint32_t f1NextRetry   = 0;
 static char     f1Buf[768];                  // SSE line assembly
 static size_t   f1BufLen      = 0;
 
+// Link diagnostics, surfaced by GET /api/state so the feed can be debugged
+// without a serial cable attached.
+uint32_t f1RxBytes   = 0;
+uint32_t f1RxRecords = 0;
+uint32_t f1Connects  = 0;
+uint32_t f1Drops     = 0;
+char     f1LastError[48] = "";
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -76,6 +84,10 @@ const char* f1FeedName(F1Feed f) {
         default:              return "disabled";
     }
 }
+
+uint32_t f1SinceData()      { return millis() - f1LastData; }
+int      f1StreamConnected() { return f1Stream ? (int)f1Stream->connected() : -1; }
+int      f1StreamAvailable() { return f1Stream ? (int)f1Stream->available()  : -1; }
 
 bool f1IsSessionLive() {
     return f1Feed == FEED_LIVE && f1Session == SES_STARTED;
@@ -167,7 +179,10 @@ static WiFiClient* f1Connect(WiFiClientSecure& tls, WiFiClient& plain) {
         c = &plain;
     }
     c->setTimeout(10);
-    if (!c->connect(Config::f1_host, Config::f1_port)) return nullptr;
+    if (!c->connect(Config::f1_host, Config::f1_port)) {
+        c->stop();          // a failed connect can still leave a socket behind
+        return nullptr;
+    }
     return c;
 }
 
@@ -224,7 +239,7 @@ static int f1ReadHeaders(WiFiClient& c, bool captureCookies, int* contentLength 
     int  status = 0;
     bool first  = true;
     char line[256];
-    const uint32_t deadline = millis() + 12000;
+    const uint32_t deadline = millis() + 5000;
 
     if (contentLength) *contentLength = -1;
 
@@ -270,6 +285,7 @@ static bool f1FetchStreamingStatus(bool& available) {
     WiFiClient* c = f1Connect(tls, plain);
     if (!c) {
         Serial.println("[F1] StreamingStatus: connect failed");
+        strlcpy(f1LastError, "streamingstatus connect failed", sizeof(f1LastError));
         return false;
     }
 
@@ -280,7 +296,7 @@ static bool f1FetchStreamingStatus(bool& available) {
 
     int len = -1;
     const int status = f1ReadHeaders(*c, false, &len);
-    String body = f1ReadBody(*c, len, millis() + 8000);
+    String body = f1ReadBody(*c, len, millis() + 4000);
     c->stop();
 
     if (status != 200) {
@@ -319,7 +335,7 @@ static bool f1Negotiate() {
     f1Cookie[0] = '\0';
     int len = -1;
     const int status = f1ReadHeaders(*c, true, &len);
-    String body = f1ReadBody(*c, len, millis() + 8000);
+    String body = f1ReadBody(*c, len, millis() + 4000);
     c->stop();
 
     if (status != 200) {
@@ -331,6 +347,8 @@ static bool f1Negotiate() {
     if (deserializeJson(doc, f1SkipBom(body.c_str())) != DeserializationError::Ok) {
         Serial.printf("[F1] negotiate: bad JSON (len=%d, got %d bytes): %.80s\n",
                       len, (int)body.length(), body.c_str());
+        snprintf(f1LastError, sizeof(f1LastError), "negotiate bad JSON (%d/%d B)",
+                 (int)body.length(), len);
         return false;
     }
 
@@ -397,7 +415,7 @@ static bool f1Send(const char* record) {
 
     int len = -1;
     const int status = f1ReadHeaders(*c, false, &len);
-    f1ReadBody(*c, len, millis() + 5000);
+    f1ReadBody(*c, len, millis() + 3000);
     c->stop();
     if (status != 200) Serial.printf("[F1] send: HTTP %d\n", status);
     return status == 200;
@@ -456,6 +474,7 @@ static void f1HandleTopic(const char* topic, JsonVariantConst data) {
 
 static void f1HandleRecord(const char* json) {
     if (json[0] == '\0' || strcmp(json, "{}") == 0) return;
+    f1RxRecords++;
 
     DynamicJsonDocument doc(768);
     if (deserializeJson(doc, json) != DeserializationError::Ok) return;
@@ -512,8 +531,15 @@ void f1HandleSseLine(char* line) {
 // ---------------------------------------------------------------------------
 
 static void f1Disconnect() {
-    if (f1Stream && f1Stream->connected()) f1Stream->stop();
+    // stop() UNCONDITIONALLY. The old guard only closed the socket while
+    // connected() was still true, so every dropped stream leaked its file
+    // descriptor. ESP32 has ~10 sockets total, so after a handful of reconnects
+    // the web server could no longer accept - the device answered ping but not
+    // HTTP, and the F1 stream starved because no socket was left to service.
+    if (f1Stream) f1Stream->stop();
     f1Stream = nullptr;
+    f1StreamPlain.stop();
+    f1StreamTls.stop();
     f1BufLen = 0;
 }
 
@@ -531,6 +557,7 @@ void f1Shutdown() {
 }
 
 static void f1Backoff() {
+    f1Drops++;
     f1Disconnect();
     f1Feed      = FEED_IDLE;
     f1NextRetry = millis() + f1RetryDelay;
@@ -560,6 +587,8 @@ static void f1Connect() {
     f1Feed       = FEED_LIVE;
     f1LastData   = millis();
     f1RetryDelay = F1_RETRY_MIN_MS;
+    f1Connects++;
+    f1LastError[0] = '\0';
     Serial.printf("[F1] subscribed (heap %u)\n", (unsigned)ESP.getFreeHeap());
 }
 
@@ -573,6 +602,7 @@ static void f1PumpStream() {
         const int ch = f1Stream->read();
         if (ch < 0) break;
         f1LastData = millis();
+        f1RxBytes++;
 
         if (ch == '\r') continue;
         if (ch == '\n') {
@@ -643,16 +673,27 @@ void f1Poll() {
     if (f1Feed == FEED_LIVE || f1Feed == FEED_STALE) {
         if (!f1Stream || !f1Stream->connected()) {
             Serial.println("[F1] stream closed");
+        strlcpy(f1LastError, "stream closed by peer", sizeof(f1LastError));
             f1Backoff();
             return;
         }
 
         f1PumpStream();
 
-        // Fail safe: never keep claiming a safety car on stale data
-        if (now - f1LastData >= F1_STALE_MS) {
+
+
+        // Fail safe: never keep claiming a safety car on stale data.
+        //
+        // Re-read the clock here. `now` was sampled at the top of f1Poll(),
+        // BEFORE f1PumpStream() ran - and the pump sets f1LastData to a LATER
+        // millis(). Using the stale `now` made (now - f1LastData) underflow to
+        // ~4.29e9, so the staleness test fired every single time data arrived,
+        // dropping a perfectly healthy stream and reconnecting forever.
+        const uint32_t sinceData = millis() - f1LastData;
+        if (sinceData >= F1_STALE_MS) {
             if (f1Feed != FEED_STALE) {
                 Serial.println("[F1] stale - no data or ping, dropping connection");
+                strlcpy(f1LastError, "stale: no data for 45s", sizeof(f1LastError));
                 f1Feed = FEED_STALE;
                 f1SetLive(false);
             }
@@ -660,13 +701,14 @@ void f1Poll() {
             return;
         }
 
-        // Session over: go back to polling and switch the lamp off
-        if (f1Session == SES_FINALISED) {
-            Serial.println("[F1] session finalised");
-            f1Disconnect();
-            f1Feed     = FEED_IDLE;
-            f1LastPoll = now;
-            f1SetLive(false);
-        }
+        // NOTE: do NOT drop the stream when the session finalises.
+        // The Subscribe snapshot reports the CURRENT session state, so if we
+        // connect after the last session ended it says "finalised" straight
+        // away. Disconnecting here caused a reconnect storm - connect, read
+        // "finalised", drop, poll, reconnect - which starved loop() so badly
+        // that the web server stopped answering while ping still worked.
+        // Holding the stream costs ~6 bytes/second and means we see the next
+        // session start immediately. f1SetLive() has already switched the lamp
+        // off, and stale detection still tears down a dead link.
     }
 }

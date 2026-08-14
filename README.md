@@ -421,6 +421,10 @@ Install via the Arduino Library Manager:
 
 Board: **ESP32C3 Dev Module** (or compatible) via the ESP32 Arduino core.
 
+> **USB CDC On Boot must be Enabled** (`Tools -> USB CDC On Boot -> Enabled`, or
+> `CDCOnBoot=cdc` on the arduino-cli FQBN). With it disabled, `Serial` is routed to
+> UART0 on GPIO20/21 instead of the USB port and you get no serial output at all.
+
 > **Partition scheme:** The sketch exceeds the default 1.25 MB app partition because `WiFiClientSecure` (used for MQTT over TLS) pulls in mbedTLS. In the Arduino IDE select **Tools → Partition Scheme → Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)** before uploading. This keeps OTA support and leaves ample room for `config.json` in SPIFFS.
 
 ---

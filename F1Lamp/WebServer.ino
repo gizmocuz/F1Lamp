@@ -556,7 +556,7 @@ void handleWebReset() {
 // ---------------------------------------------------------------------------
 
 void handleApiStateGet() {
-    DynamicJsonDocument doc(640);
+    DynamicJsonDocument doc(1024);
 
     doc["state"]       = ledState ? "on" : "off";
     doc["brightness"]  = currentBrightness;
@@ -577,11 +577,24 @@ void handleApiStateGet() {
     f1["feed"]    = f1FeedName(f1Feed);
     f1["track"]   = f1TrackName(f1Track);
     f1["session"] = f1SessionStateName(f1Session);
+    f1["host"]    = Config::f1_host;
+    f1["port"]    = Config::f1_port;
+    f1["tls"]     = Config::f1_tls;
+    f1["rx_bytes"]   = f1RxBytes;
+    f1["rx_records"] = f1RxRecords;
+    f1["connects"]   = f1Connects;
+    f1["drops"]      = f1Drops;
+    f1["last_error"] = f1LastError;
+    f1["heap"]       = ESP.getFreeHeap();
+    f1["uptime_s"]      = (uint32_t)(millis() / 1000);
+    f1["since_data_ms"] = f1SinceData();
+    f1["stream_conn"]   = f1StreamConnected();
+    f1["stream_avail"]  = f1StreamAvailable();
 
     doc["ip"]           = WiFi.localIP().toString();
     doc["rssi"]         = WiFi.RSSI();
 
-    char payload[512];
+    char payload[1024];
     serializeJson(doc, payload);
     webServer.send(200, "application/json", payload);
 }
@@ -596,7 +609,7 @@ void handleApiStatePost() {
         return;
     }
 
-    DynamicJsonDocument doc(640);
+    DynamicJsonDocument doc(1024);
     if (deserializeJson(doc, webServer.arg("plain")) != DeserializationError::Ok) {
         webServer.send(400, "application/json", "{\"error\":\"invalid JSON\"}");
         return;
@@ -636,9 +649,29 @@ void handleApiStatePost() {
         Config::effect_speed = constrain((int)doc["effect_speed"], 1, 10);
         changed = true;
     }
+    bool f1Changed = false;
     if (doc.containsKey("f1_enabled")) {
-        Config::f1_enabled = doc["f1_enabled"].as<bool>();   // applied by f1Poll() next loop()
-        changed = true;
+        Config::f1_enabled = doc["f1_enabled"].as<bool>();
+        changed = true; f1Changed = true;
+    }
+    // Host/port/transport are settable here too so a test rig can repoint the
+    // lamp at a simulator without driving the HTML form.
+    if (doc.containsKey("f1_host")) {
+        const char* h = doc["f1_host"].as<const char*>();
+        if (h && h[0]) { strlcpy(Config::f1_host, h, sizeof(Config::f1_host)); changed = true; f1Changed = true; }
+    }
+    if (doc.containsKey("f1_port")) {
+        Config::f1_port = constrain((int)doc["f1_port"], 1, 65535);
+        changed = true; f1Changed = true;
+    }
+    if (doc.containsKey("f1_tls")) {
+        Config::f1_tls = doc["f1_tls"].as<bool>();
+        changed = true; f1Changed = true;
+    }
+    if (f1Changed) {
+        Config::save();
+        configDirty = false;
+        f1Shutdown();      // reconnect with the new settings on the next loop()
     }
 
     if (changed) markConfigDirty();

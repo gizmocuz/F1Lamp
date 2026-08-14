@@ -481,6 +481,7 @@ def make_handler(sim):
                             raise ConnectionError("closed by scenario")
                         self.wfile.write(item)
                         self.wfile.flush()
+                        sim.log("SSE  tx %d B" % len(item), C.GREY)
                     # keep-alive ping every 15 real seconds, like the real feed
                     if time.time() - last_ping >= 15:
                         last_ping = time.time()
@@ -492,8 +493,10 @@ def make_handler(sim):
                             with sim.lock:
                                 sim.pings += 1
                     time.sleep(0.05)
-            except Exception:
-                pass
+            except Exception as e:
+                # Never swallow this: a dying writer thread looks exactly like a
+                # broken client, and cost a long debugging detour once already.
+                sim.log("SSE  writer died: %s: %s" % (type(e).__name__, e), C.RED)
             finally:
                 with sim.lock:
                     if q in sim.subscribers:
