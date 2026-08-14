@@ -87,6 +87,13 @@ namespace Config {
 
             if (configFile) {
                 const size_t size = configFile.size();
+                // Cap the allocation. config.json is ~600 bytes; a corrupt or
+                // oversized file must not be able to eat the heap that WiFi and
+                // MQTT still need.
+                if (size > 8192) {
+                    configFile.close();
+                    return;
+                }
                 std::unique_ptr<char[]> buf(new char[size + 1]);
 
                 configFile.readBytes(buf.get(), size);

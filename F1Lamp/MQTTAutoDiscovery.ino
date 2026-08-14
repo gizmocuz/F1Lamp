@@ -1,5 +1,16 @@
 // MQTTAutoDiscovery.ino - MQTT state publishing and Home Assistant auto-discovery
 
+// serializeJson() truncates SILENTLY when the buffer is too small, and a
+// truncated retained discovery message is the classic reason an entity never
+// appears in Home Assistant or Domoticz. Complain loudly instead.
+static void f1SerializeChecked(JsonDocument& doc, char* buf, size_t bufSize) {
+    const size_t written = serializeJson(doc, buf, bufSize);
+    if (written >= bufSize - 1) {
+        Serial.printf("[MQTT] discovery payload TRUNCATED at %u bytes - entity may not appear\n",
+                      (unsigned)bufSize);
+    }
+}
+
 const char* effectName(int idx) {
     if (idx < 0 || idx >= EFFECT_COUNT) return EFFECT_NAMES[EFFECT_SOLID];
     return EFFECT_NAMES[idx];
@@ -76,7 +87,7 @@ void publishAutoConfig() {
     }
     autoconfPayload["icon"]                 = "mdi:flag-checkered";
 
-    serializeJson(autoconfPayload, mqttPayload);
+    f1SerializeChecked(autoconfPayload, mqttPayload, sizeof(mqttPayload));
     mqttClient.publish(MQTT_TOPIC_AUTOCONF_LIGHT, mqttPayload, true);
 
     autoconfPayload.clear();
@@ -97,7 +108,7 @@ void publishAutoConfig() {
     }
     autoconfPayload["icon"]               = "mdi:animation-play";
 
-    serializeJson(autoconfPayload, mqttPayload);
+    f1SerializeChecked(autoconfPayload, mqttPayload, sizeof(mqttPayload));
     mqttClient.publish(MQTT_TOPIC_AUTOCONF_EFFECT, mqttPayload, true);
 
     autoconfPayload.clear();
@@ -114,7 +125,7 @@ void publishAutoConfig() {
     autoconfPayload["payload_off"]        = "OFF";
     autoconfPayload["icon"]               = "mdi:car-sports";
 
-    serializeJson(autoconfPayload, mqttPayload);
+    f1SerializeChecked(autoconfPayload, mqttPayload, sizeof(mqttPayload));
     mqttClient.publish(MQTT_TOPIC_AUTOCONF_F1SW, mqttPayload, true);
 
     autoconfPayload.clear();
@@ -128,7 +139,7 @@ void publishAutoConfig() {
     autoconfPayload["value_template"]     = "{{ value_json.f1_track }}";
     autoconfPayload["icon"]               = "mdi:flag-outline";
 
-    serializeJson(autoconfPayload, mqttPayload);
+    f1SerializeChecked(autoconfPayload, mqttPayload, sizeof(mqttPayload));
     mqttClient.publish(MQTT_TOPIC_AUTOCONF_F1SENS, mqttPayload, true);
 }
 

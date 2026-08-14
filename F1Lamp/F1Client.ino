@@ -218,7 +218,10 @@ static bool f1ReadLine(WiFiClient& c, char* buf, size_t bufSize, uint32_t deadli
 // otherwise we drain until the peer closes. Never relies on Stream timeouts.
 static String f1ReadBody(WiFiClient& c, int contentLength, uint32_t deadline) {
     String out;
-    if (contentLength > 0) out.reserve(contentLength + 1);
+    // Reserve up front on BOTH paths. Arduino's String grows in 16-byte steps,
+    // so an unreserved byte-at-a-time read reallocates repeatedly and
+    // fragments the heap. With Content-Length known this is a single alloc.
+    out.reserve(contentLength > 0 ? contentLength + 1 : 512);
 
     while ((int32_t)(millis() - deadline) < 0) {
         if (contentLength > 0 && (int)out.length() >= contentLength) break;
@@ -570,6 +573,7 @@ static void f1Backoff() {
 
 static void f1Connect() {
     f1Feed = FEED_CONNECTING;
+    f1Disconnect();   // defensive: never overwrite a live f1Stream and leak its socket
     Serial.printf("[F1] connecting (heap %u)\n", (unsigned)ESP.getFreeHeap());
 
     if (!f1Negotiate())  { f1Backoff(); return; }
@@ -614,7 +618,12 @@ static void f1PumpStream() {
         if (f1BufLen < sizeof(f1Buf) - 1) {
             f1Buf[f1BufLen++] = (char)ch;
         } else {
-            f1BufLen = 0;   // oversized line - drop it rather than corrupt state
+            // Oversized line - drop it rather than corrupt state, but say so.
+            // Silently losing a status update would leave the lamp showing
+            // stale information with no clue why.
+            Serial.printf("[F1] SSE line over %u bytes, dropped\n",
+                          (unsigned)sizeof(f1Buf));
+            f1BufLen = 0;
         }
     }
 }
