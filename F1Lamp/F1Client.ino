@@ -19,6 +19,8 @@
 //   * SignalR Core records are terminated by 0x1E, not by a newline.
 
 #define F1_IDLE_POLL_MS   120000UL   // StreamingStatus poll interval while idle
+#define F1_DEV_POLL_MS    8000UL     // ...and when pointed at the dev simulator
+#define F1_DEV_RETRY_MAX  20000UL    // shorter backoff cap in dev, 5 min is unusable there
 #define F1_STALE_MS       45000UL    // no data/ping for this long -> stale (pings are ~15 s)
 #define F1_RETRY_MIN_MS   5000UL
 #define F1_RETRY_MAX_MS   300000UL
@@ -475,7 +477,9 @@ static void f1Backoff() {
     f1Disconnect();
     f1Feed      = FEED_IDLE;
     f1NextRetry = millis() + f1RetryDelay;
-    f1RetryDelay = min(f1RetryDelay * 2, (uint32_t)F1_RETRY_MAX_MS);
+    const uint32_t cap = f1UsingRealService() ? (uint32_t)F1_RETRY_MAX_MS
+                                              : (uint32_t)F1_DEV_RETRY_MAX;
+    f1RetryDelay = min(f1RetryDelay * 2, cap);
     Serial.printf("[F1] retry in %lu s\n", (unsigned long)(f1RetryDelay / 1000));
     f1SetLive(false);
 }
@@ -560,7 +564,9 @@ void f1Poll() {
 
     if (f1Feed == FEED_IDLE) {
         if (now < f1NextRetry) return;
-        if (f1LastPoll != 0 && now - f1LastPoll < F1_IDLE_POLL_MS) return;
+        const uint32_t pollMs = f1UsingRealService() ? (uint32_t)F1_IDLE_POLL_MS
+                                                     : (uint32_t)F1_DEV_POLL_MS;
+        if (f1LastPoll != 0 && now - f1LastPoll < pollMs) return;
         f1LastPoll = now;
 
         bool available = false;
@@ -570,6 +576,8 @@ void f1Poll() {
             Serial.println("[F1] feed available");
             f1Connect();
         } else {
+            Serial.printf("[F1] %s says Offline - nothing live, lamp stays off\n",
+                          Config::f1_host);
             f1SetLive(false);
         }
         return;

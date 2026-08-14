@@ -568,9 +568,22 @@ def render(sim, port, width=78):
         out.append("        " + C.CYAN + "http://%s:%d/static/StreamingStatus.json" % (local_ip(), port) + C.RESET)
         out.append("      If that fails, it is the network or firewall, not the lamp.")
         out.append("")
+    elif nsub == 0 and streaming != "Available":
+        out.append("  " + C.ON_YELLOW + C.BOLD +
+                   " THE LAMP IS POLLING CORRECTLY - but this scenario is OFFLINE " + C.RESET)
+        out.append("")
+        out.append("   %d request(s) received, so the network path works." % nreq)
+        out.append("   Nothing is live, so the lamp is right to stay off and not connect.")
+        out.append("")
+        out.append("   The race scenario ends at t=150s and goes Offline. Restart it, or use")
+        out.append("        " + C.CYAN + "python f1_sim.py --loop" + C.RESET +
+                   "   to replay it continuously.")
+        out.append("")
     elif nsub == 0:
-        out.append("  " + C.YELLOW + "Requests seen, but no SSE stream open yet." + C.RESET +
-                   " Streaming must be Available for the lamp to connect.")
+        out.append("  " + C.YELLOW +
+                   "Streaming is Available and %d request(s) arrived, but no SSE stream yet."
+                   % nreq + C.RESET)
+        out.append("   The lamp polls every ~8 s in dev mode; give it a moment.")
         out.append("")
 
     out.append(C.BOLD + "  PROTOCOL CHECKS" + C.RESET)
