@@ -113,12 +113,68 @@ The state badge is refreshed every 3 seconds so changes made through MQTT or the
 | Effect speed | 1 (slow) – 10 (fast) |
 | Brightness | Overall brightness (1–255) |
 | Turn on after power-up | Whether the lamp lights up by itself after a power cycle |
+| **Track live F1** | Mirror the live F1 track status; lamp is held off while no session runs |
 
 All changes take effect immediately after saving — no reboot needed. Enabling or disabling MQTT blinks the lamp twice to confirm.
 
 ### WiFi reset — `/reset`
 
 Clears saved WiFi credentials and reboots into the captive portal.
+
+---
+
+## Formula 1 live tracking
+
+Enable **Track live F1** on the configuration page (or via MQTT / REST) and the lamp mirrors the official F1 race-control status.
+
+**While no session is running the lamp is switched off.** You can still turn it on by hand — from the web UI, the REST API or MQTT — and it stays on until F1 next changes state, because the feed only drives the lamp on a *transition*.
+
+| Track status | Colour | Effect |
+|---|---|---|
+| Green / all clear | Green | Solid |
+| Yellow | Amber | Solid |
+| **Safety car** | Amber | **Blink** (alternating F / 1) |
+| **Virtual safety car** | Amber | Breathe, slow |
+| VSC ending | Amber | Breathe, fast |
+| **Red flag** | Red | Solid |
+
+Your own colour, effect and brightness settings are never overwritten — the F1 status is applied as a temporary override, and the moment tracking stops or the session ends your lamp goes straight back to how you had it. Nothing extra is written to flash.
+
+### How it works
+
+Two unauthenticated endpoints on F1's own timing server, no API key and no intermediary server:
+
+| Purpose | Endpoint | Cost |
+|---|---|---|
+| Is anything live? | `livetiming.formula1.com/static/StreamingStatus.json` | 23 bytes, polled every 2 min |
+| Live status | `livetiming.formula1.com/signalrcore` (SignalR Core over SSE) | **~6 bytes/second** |
+
+Only `TrackStatus` and `SessionStatus` are subscribed, which keeps every message under ~200 bytes. `RaceControlMessages` is deliberately *not* subscribed — its first message replays the entire session history (14 kB and growing), which would need a streaming parser for no real benefit here. The cost of that choice is no sector-level yellow flags.
+
+> **Note:** this is F1's own undocumented feed, used the same way FastF1 and MultiViewer use it. It is fine for a personal project, but it is not a licensed or supported API and F1 can change it without warning — the older `/signalr` endpoint already returns 401.
+
+### Reliability
+
+If no data *or* keep-alive ping arrives for 45 seconds (pings normally arrive every ~15 s), the feed is marked **stale**, the connection is dropped and the lamp stops claiming a safety car — it reverts and reconnects with exponential backoff (5 s → 5 min). An unrecognised status code holds the last known good state rather than falling back to green.
+
+### Self-test — `GET /api/f1_test`
+
+F1 sessions are rare, so the safety-car, VSC and red-flag paths are usually untestable when you want to test them. This endpoint replays 18 recorded SignalR records — including two captured verbatim from the live feed — through the exact same parser the live stream uses, and checks the resulting state:
+
+```bash
+curl http://192.168.1.42/api/f1_test
+```
+```
+1   PASS empty frame ignored                          track=unknown     session=unknown
+2   PASS Subscribe snapshot (real capture)            track=clear       session=finished
+...
+10  PASS unknown code 3 holds previous state          track=red         session=started
+12  PASS two 0x1E-separated records in one line       track=safety_car  session=started
+
+18 passed, 0 failed
+```
+
+Returns HTTP 200 when everything passes, 500 otherwise. The lamp visibly cycles green → yellow → safety car → VSC → red as it runs, then returns to what it was doing.
 
 ---
 
@@ -341,6 +397,7 @@ All settings are stored in SPIFFS as `/config.json`. If the filesystem cannot be
 | effect | 0 (Solid) |
 | effect_speed | 5 |
 | power_on_boot | true |
+| f1_enabled | false |
 
 ---
 
@@ -370,6 +427,8 @@ Board: **ESP32C3 Dev Module** (or compatible) via the ESP32 Arduino core.
 F1Lamp/
 ├── F1Lamp.ino               # Main file: globals, setup(), loop()
 ├── Config.h                 # All persistent settings + SPIFFS load/save
+├── F1Client.ino             # F1 live timing: StreamingStatus poll + SignalR Core over SSE
+├── F1SelfTest.ino           # Offline parser self-test (GET /api/f1_test)
 ├── LEDControl.ino           # LED rendering, effects, connection animations
 ├── MQTTAutoDiscovery.ino    # MQTT state publishing, HA auto-discovery, command callback
 ├── WebServer.ino            # Web UI handlers + REST API

@@ -32,7 +32,25 @@ void handleWebRoot() {
     html += colorHex;
     html += R"rawhtml(</p><p><b>Effect:</b> )rawhtml";
     html += effectName(Config::effect);
-    html += R"rawhtml(</p><hr>)rawhtml";
+    html += R"rawhtml(</p>)rawhtml";
+
+    // F1 live tracking status
+    if (Config::f1_enabled) {
+        html += R"rawhtml(<p><b>F1 tracking:</b> <span style="color:#4caf50">on</span> &mdash; feed <b>)rawhtml";
+        html += f1FeedName(f1Feed);
+        html += R"rawhtml(</b></p>)rawhtml";
+        if (f1IsSessionLive()) {
+            html += R"rawhtml(<p><b>Track status:</b> )rawhtml";
+            html += f1TrackName(f1Track);
+            html += R"rawhtml( &nbsp;|&nbsp; <b>Session:</b> )rawhtml";
+            html += f1SessionStateName(f1Session);
+            html += R"rawhtml(</p>)rawhtml";
+        } else {
+            html += R"rawhtml(<p><small>No session live &mdash; lamp is held off.</small></p>)rawhtml";
+        }
+    }
+
+    html += R"rawhtml(<hr>)rawhtml";
 
     // On / off
     html += R"rawhtml(<p><a class="btn btn-on" href="/set?state=on">Turn ON</a> <a class="btn btn-off" href="/set?state=off">Turn OFF</a></p>)rawhtml";
@@ -247,6 +265,21 @@ void handleWebConfig() {
     if (Config::power_on_boot) html += R"rawhtml( checked)rawhtml";
     html += R"rawhtml(></td></tr>)rawhtml";
 
+    // --- F1 live tracking section ---
+    html += R"rawhtml(<tr><td colspan="2"><hr></td></tr><tr><td colspan="2"><b>Formula 1 live tracking</b></td></tr>)rawhtml";
+
+    html += R"rawhtml(<tr><td>Track live F1:</td><td><input type="checkbox" name="f1_enabled")rawhtml";
+    if (Config::f1_enabled) html += R"rawhtml( checked)rawhtml";
+    html += R"rawhtml(><br><small>Mirrors the official F1 track status: green / yellow / safety car (blink) / VSC (breathe) / red.<br>While no session is running the lamp is switched <b>off</b>. You can still turn it on by hand or over MQTT.</small></td></tr>)rawhtml";
+
+    if (Config::f1_enabled) {
+        html += R"rawhtml(<tr><td>Feed state:</td><td>)rawhtml";
+        html += f1FeedName(f1Feed);
+        html += R"rawhtml( &nbsp;|&nbsp; track: )rawhtml";
+        html += f1TrackName(f1Track);
+        html += R"rawhtml(</td></tr>)rawhtml";
+    }
+
     html += R"rawhtml(</table><br><div style="text-align:center"><button class="btn" type="submit">Save</button></div></form><hr><p style="text-align:center"><a href="/">Back to status</a> &nbsp;|&nbsp; <a href="/reset" style="color:#E74C3C" onclick="return confirm('Reset WiFi settings and reboot into AP mode?')">Reset WiFi</a></p>)rawhtml";
 
     html += R"rawhtml(<script>function mqttTest(){var f=document.forms[0];var r=document.getElementById('mqttres');var b=document.getElementById('mqttbtn');var q='?server='+encodeURIComponent(f.mqtt_server.value)+'&port='+encodeURIComponent(f.mqtt_port.value)+'&username='+encodeURIComponent(f.mqtt_username.value)+'&password='+encodeURIComponent(f.mqtt_password.value)+'&secure='+(f.mqtt_secure.checked?'1':'0');b.disabled=true;r.style.color='#999';r.textContent='Testing...';fetch('/api/mqtt_test'+q).then(function(x){return x.json()}).then(function(j){r.style.color=j.ok?'#4caf50':'#E74C3C';r.textContent=j.message;b.disabled=false;}).catch(function(){r.style.color='#E74C3C';r.textContent='Request failed';b.disabled=false;});}</script></body></html>)rawhtml";
@@ -265,6 +298,7 @@ void handleWebConfigSave() {
     Config::mqtt_enabled  = webServer.hasArg("mqtt_enabled");
     Config::mqtt_secure   = webServer.hasArg("mqtt_secure");
     Config::power_on_boot = webServer.hasArg("power_on_boot");
+    Config::f1_enabled    = webServer.hasArg("f1_enabled");   // f1Poll() applies this on the next loop()
 
     if (webServer.hasArg("mqtt_server")) {
         String s = webServer.arg("mqtt_server"); s.trim();
@@ -475,7 +509,7 @@ void handleWebReset() {
 // ---------------------------------------------------------------------------
 
 void handleApiStateGet() {
-    DynamicJsonDocument doc(384);
+    DynamicJsonDocument doc(640);
 
     doc["state"]       = ledState ? "on" : "off";
     doc["brightness"]  = currentBrightness;
@@ -489,10 +523,18 @@ void handleApiStateGet() {
     doc["effect_name"]  = effectName(Config::effect);
     doc["effect_speed"] = Config::effect_speed;
     doc["pixels"]       = totalPixels();
+
+    JsonObject f1 = doc.createNestedObject("f1");
+    f1["enabled"] = Config::f1_enabled;
+    f1["live"]    = f1IsSessionLive();
+    f1["feed"]    = f1FeedName(f1Feed);
+    f1["track"]   = f1TrackName(f1Track);
+    f1["session"] = f1SessionStateName(f1Session);
+
     doc["ip"]           = WiFi.localIP().toString();
     doc["rssi"]         = WiFi.RSSI();
 
-    char payload[384];
+    char payload[512];
     serializeJson(doc, payload);
     webServer.send(200, "application/json", payload);
 }
@@ -507,7 +549,7 @@ void handleApiStatePost() {
         return;
     }
 
-    DynamicJsonDocument doc(384);
+    DynamicJsonDocument doc(640);
     if (deserializeJson(doc, webServer.arg("plain")) != DeserializationError::Ok) {
         webServer.send(400, "application/json", "{\"error\":\"invalid JSON\"}");
         return;
@@ -545,6 +587,10 @@ void handleApiStatePost() {
     }
     if (doc.containsKey("effect_speed")) {
         Config::effect_speed = constrain((int)doc["effect_speed"], 1, 10);
+        changed = true;
+    }
+    if (doc.containsKey("f1_enabled")) {
+        Config::f1_enabled = doc["f1_enabled"].as<bool>();   // applied by f1Poll() next loop()
         changed = true;
     }
 

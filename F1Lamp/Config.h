@@ -31,6 +31,11 @@ namespace Config {
     int     effect_speed    = 5;    // 1 (slow) .. 10 (fast)
     bool    power_on_boot   = true; // lamp turns on by itself after a power cycle
 
+    // --- Formula 1 live tracking ---
+    // When enabled the lamp mirrors the official F1 track status and switches
+    // itself off whenever no session is running.
+    bool    f1_enabled      = false;
+
     void save() {
         DynamicJsonDocument json(1024);
         json["mqtt_server"]    = mqtt_server;
@@ -56,6 +61,7 @@ namespace Config {
         json["effect"]          = effect;
         json["effect_speed"]    = effect_speed;
         json["power_on_boot"]   = power_on_boot;
+        json["f1_enabled"]      = f1_enabled;
 
         File configFile = SPIFFS.open("/config.json", "w");
         if (!configFile) {
@@ -103,6 +109,7 @@ namespace Config {
                     effect          = json["effect"]        | 0;
                     effect_speed    = json["effect_speed"]  | 5;
                     power_on_boot   = json["power_on_boot"] | true;
+                    f1_enabled      = json["f1_enabled"]    | false;
                 }
             }
         }

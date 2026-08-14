@@ -57,6 +57,7 @@ void setupWifi() {
     webServer.on("/api/brightness", HTTP_GET,  handleApiBrightness);
     webServer.on("/api/color",      HTTP_POST, handleApiColor);
     webServer.on("/api/mqtt_test",  HTTP_GET,  handleApiMqttTest);
+    webServer.on("/api/f1_test",    HTTP_GET,  handleApiF1Test);
     webServer.onNotFound(handleWebNotFound);
     webServer.begin();
 
@@ -123,6 +124,7 @@ void mqttReconnect() {
             publishState();
             mqttClient.subscribe(MQTT_TOPIC_COMMAND);
             mqttClient.subscribe(MQTT_TOPIC_EFFECT_SET);
+            mqttClient.subscribe(MQTT_TOPIC_F1_SET);
             updateLEDs(); // clear connecting animation from the strips
             return;
         }

@@ -24,8 +24,20 @@ int stripLength(int idx) {
     return Config::strip3_pixels;
 }
 
+// While the F1 feed drives the lamp these return the F1 override instead of the
+// user's saved settings, so Config is never touched and nothing extra is
+// written to flash. Clearing f1Override restores the user's look instantly.
 uint32_t currentColor() {
+    if (f1Override) return ws2812b.Color(f1R, f1G, f1B);
     return ws2812b.Color(Config::color_r, Config::color_g, Config::color_b);
+}
+
+int currentEffect() {
+    return f1Override ? f1Effect : Config::effect;
+}
+
+int currentSpeed() {
+    return f1Override ? f1Speed : Config::effect_speed;
 }
 
 // The logo has two glyphs: strips 1 + 2 together form the "F", strip 3 forms the "1".
@@ -62,7 +74,7 @@ void updateLEDs() {
 
     // Animated effects draw their first frame on the next handleEffect() call;
     // only Solid has a static frame to paint here.
-    if (Config::effect == EFFECT_SOLID) {
+    if (currentEffect() == EFFECT_SOLID) {
         ws2812b.fill(currentColor(), 0, totalPixels());
     }
     ws2812b.show();
@@ -82,13 +94,13 @@ void handleEffect() {
         effectReset = false;
     }
 
-    if (!ledState || Config::effect == EFFECT_SOLID) return;
+    if (!ledState || currentEffect() == EFFECT_SOLID) return;
 
     const int n   = totalPixels();
-    const int spd = constrain(Config::effect_speed, 1, 10);
+    const int spd = constrain(currentSpeed(), 1, 10);
 
     uint32_t interval;
-    switch (Config::effect) {
+    switch (currentEffect()) {
         case EFFECT_BREATHE:
         case EFFECT_RAINBOW:     interval = 25; break;
         case EFFECT_CHASE:       interval = map(spd, 1, 10,  300,  30); break;
@@ -102,7 +114,7 @@ void handleEffect() {
     if (lastStep != 0 && now - lastStep < interval) return;
     lastStep = now;
 
-    switch (Config::effect) {
+    switch (currentEffect()) {
 
         case EFFECT_BREATHE: {
             // Triangle wave over 512 steps: 0 -> 255 -> 0
