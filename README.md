@@ -36,7 +36,7 @@ An ESP32-C3 Super Mini firmware for the **[F1 WLED Lightbox](https://makerworld.
 ESP32-C3 Super Mini            LED strips (chained)
   5V  ──────────────────────►  +5V   (strip 1 → strip 2 → strip 3)
   GND ──────────────────────►  GND
-  GPIO4 ────[330 Ω]─────────►  DIN of strip 1
+  GPIO4 ───[330 Ω]*─────────►  DIN of strip 1     * optional, see below
                                DOUT strip 1 → DIN strip 2
                                DOUT strip 2 → DIN strip 3
 ```
@@ -79,7 +79,7 @@ and will **not** help. An `SN74HCT245` works equally well.
                 │    │        │                   │
      GPIO4  ────┼────┼────────┤2   1A             │
                 │    │        │                   │
-                │    │        │3   1Y             ├──[330R]──► DIN
+                │    │        │3   1Y             ├──[330R]*─► DIN
                 │    │        │                   │
                 │    ├─ 0.1uF ┤7   GND            │
                 └────┼────────┤                   │
@@ -98,7 +98,7 @@ and will **not** help. An `SN74HCT245` works equally well.
 | 7 `GND` | GND (common with the ESP32) |
 | 1 `1OE` | **GND** - active low, ties the buffer permanently on |
 | 2 `1A` | ESP32 **GPIO4** (data out) |
-| 3 `1Y` | 330 Ohm resistor, then strip **DIN** |
+| 3 `1Y` | strip **DIN** (optionally via a 330 Ohm series resistor) |
 | 4, 10, 13 (`2OE`,`3OE`,`4OE`) | +5 V, to disable the three unused outputs |
 | 5, 9, 12 (`2A`,`3A`,`4A`) | GND, so unused inputs do not float |
 | across 14 and 7 | 0.1 uF ceramic decoupling capacitor |
@@ -106,6 +106,12 @@ and will **not** help. An `SN74HCT245` works equally well.
 Keep the data wire short, and give the strip its own 470-1000 uF electrolytic
 across +5 V / GND. With the buffer fitted the lamp behaves identically on any
 5 V supply.
+
+**\* The 330 Ohm series resistor is optional.** It damps reflections on the data
+line and limits current into DIN if the strip is powered while the ESP32 is not.
+On a short lead with 11 LEDs the lamp works fine without it - leaving it out is
+not a cause of wrong colours. Worth fitting alongside the buffer, since it is
+the same joint, but it is belt-and-braces rather than a fix.
 
 **Zero-part alternative for testing:** move the strip's `+` from `5V` to `3V3`.
 At 3.3 V supply the threshold drops to ~2.3 V and the 3.3 V data works cleanly.
